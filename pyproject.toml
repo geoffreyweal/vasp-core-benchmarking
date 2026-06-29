@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vasp-core-benchmarking"
+version = "0.1.0"
+description = "SLURM ntasks x cpus-per-task benchmarking generator and analyser for VASP"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Geoffrey Weal", email = "geoffrey.weal@reannz.co.nz" }]
+keywords = ["vasp", "slurm", "hpc", "benchmarking", "chemistry", "dft"]
+dependencies = [
+    "numpy",
+    "pandas",
+    "plotly",
+    "tqdm",
+]
+
+[project.scripts]
+vasp-core-benchmarking = "vasp_core_benchmarking.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
