@@ -26,13 +26,15 @@ vasp-core-benchmarking --version
 
 ## Workflow
 
-The tool runs in three parts, plus an optional cleanup step.
+The tool runs in three parts, plus status/reset helpers and an optional cleanup step.
 
 | Subcommand | Purpose |
 | --- | --- |
 | `setup`  | Generate a benchmark directory per `ntasks × cpus-per-task` layout. |
-| `submit` | `sbatch` every generated job. |
+| `submit` | `sbatch` the configs that need running (pending + failed). |
 | `report` | Collect utilisation and electronic-step efficiency into CSV + HTML. |
+| `status` | Re-scan folders and refresh `folder_index.html` with each config's run state. |
+| `reset`  | Reset errored configs back to their inputs so `submit` will relaunch them. |
 | `clean`  | Delete bulky VASP outputs once you're done. |
 
 ### Part 1 — `setup`: create the benchmarking files
@@ -161,25 +163,30 @@ vasp-core-benchmarking submit --dry-run  # list what would be submitted
 vasp-core-benchmarking submit --yes      # no prompt
 ```
 
-Finds every `submit.sl` under `--root` and `sbatch`es it in ascending core order,
-pausing briefly every 10 submissions to avoid scheduler rate limits.
+Every config is classified first (the same run-state rules `status` uses) and only
+the ones that need running are submitted, in ascending core order, pausing briefly
+every 10 submissions to avoid scheduler rate limits:
 
-#### Retrying failed jobs
+- **pending** (never launched — only inputs present) → submitted;
+- **failed** (launched, incomplete, no identifiable error) → **reset to its inputs
+  first**, then submitted;
+- **completed**, **running** and **errored** configs are skipped.
 
-A job is "failed" if it produced no usable result — an `OUTCAR` with fewer than two
-`LOOP` lines, i.e. it did not run far enough to time. To resubmit just those:
+`submit` prints the exact plan (which folders, and why) before the confirmation
+prompt, so you always see what will launch.
 
-```bash
-vasp-core-benchmarking submit --retry-failed --dry-run  # list which would be retried
-vasp-core-benchmarking submit --retry-failed            # reset + resubmit them
-```
-
-For each failed config this **resets the directory** to just `INCAR`, `KPOINTS`,
+Resetting a failed config restores the directory to just `INCAR`, `KPOINTS`,
 `POTCAR`, `POSCAR` and `submit.sl` (deleting the old OUTCAR, slurm logs and other
-leftovers), then resubmits. Configs that already have a result are left untouched.
+leftovers) before resubmitting.
 
 > The reset keeps only those five files. If your system needs extra inputs (e.g.
 > `ML_FF`), re-run `setup` to repopulate them before retrying, or copy them back in.
+
+Errored configs — those that ended with an identifiable failure (a VASP abort
+message in the `OUTCAR`, an abnormal SLURM terminal state such as `TIMEOUT` or
+`OUT_OF_MEMORY`, or an error line in `slurm-<id>.out`) — are **never** resubmitted
+automatically, because they usually need attention first (more memory, a longer
+walltime, a fixed input). Fix the cause, then clear them with `reset` (below).
 
 ### Part 3 — `report`: measure utilisation and efficiency
 
@@ -229,6 +236,49 @@ vasp-core-benchmarking report --baseline /path/to/no_hyperthreading/run # extern
 Speedup becomes `t_baseline / t_N`, and the ideal line scales by the baseline's
 core count (`total_cores / baseline_cores`). An unknown config name, or a path
 whose OUTCAR has no usable result, is reported as a clear error.
+
+### `status`: see the state of every config
+
+```bash
+vasp-core-benchmarking status               # re-scan + refresh folder_index.html
+vasp-core-benchmarking status --no-sacct    # classify from local files only
+```
+
+Re-scans every layout folder under `--root`, classifies each run, prints a summary,
+and (re)writes a self-contained `folder_index.html` in the root — a snapshot table
+of every config's layout (total cores, MPI ranks, OpenMP threads) and current state,
+with a status filter. Open it in a browser and re-run `status` (or `report`) to
+refresh it.
+
+Each config is classified as one of:
+
+| State | Meaning |
+| --- | --- |
+| **run** | `OUTCAR` ends with VASP's normal-termination timing footer and has a final energy. |
+| **running** | Launched, incomplete, and its SLURM job is still active (via `sacct`; without it, its output files were written to within the last 30 minutes). |
+| **error** | Ended with an identifiable failure — a VASP abort in the `OUTCAR`, an abnormal SLURM state (`TIMEOUT`, `OUT_OF_MEMORY`, …), or an error line in `slurm-<id>.out`. |
+| **failed** | Launched and incomplete, not still running, but no specific error could be identified (e.g. killed without a message). |
+| **pending** | No sign the run has been launched yet (only input files). |
+
+With `--no-sacct` the scheduler is not queried: "running" is inferred from recent
+output-file activity instead, so the classification still works from the folder
+contents alone.
+
+### `reset`: clear errored configs
+
+```bash
+vasp-core-benchmarking reset --dry-run   # list errored configs without touching them
+vasp-core-benchmarking reset             # prompts for confirmation
+vasp-core-benchmarking reset --yes       # no prompt
+```
+
+Resets every **errored** config back to its inputs (`INCAR`, `KPOINTS`, `POTCAR`,
+`POSCAR`, `submit.sl`), deleting the failed run's artefacts and returning it to
+**pending** so the next `submit` relaunches it. Completed, running, failed and
+pending configs are left untouched.
+
+Fix the cause of the error first (e.g. raise the memory or walltime in your include
+and re-run `setup` for any brand-new layouts), then `reset` and `submit`.
 
 ### Optional — `clean`: reclaim disk space
 

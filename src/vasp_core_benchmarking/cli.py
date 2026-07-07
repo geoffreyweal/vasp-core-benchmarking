@@ -3,8 +3,11 @@
 Subcommands:
 
   vasp-core-benchmarking setup   - Part 1: create the benchmarking directory tree.
-  vasp-core-benchmarking submit  - Part 2: submit all jobs to SLURM.
+  vasp-core-benchmarking submit  - Part 2: submit the configs that need running.
   vasp-core-benchmarking report  - Part 3: collect utilisation + efficiency results.
+  vasp-core-benchmarking status  - re-scan folders + refresh folder_index.html.
+  vasp-core-benchmarking reset   - reset errored configs back to their inputs.
+  vasp-core-benchmarking clean   - delete bulky outputs, keep inputs + results.
 """
 
 from __future__ import annotations
@@ -80,16 +83,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ---- submit ----------------------------------------------------------
-    p_submit = sub.add_parser("submit", help="Part 2: submit all jobs to SLURM.")
+    p_submit = sub.add_parser(
+        "submit",
+        help="Part 2: submit the configs that need running (pending + failed; "
+        "completed/running/errored are skipped).",
+    )
     p_submit.add_argument("--root", default="VASP_Benchmarking", help="Benchmark root directory.")
     p_submit.add_argument("--dry-run", action="store_true", help="List jobs without submitting.")
     p_submit.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
-    p_submit.add_argument(
-        "--retry-failed",
-        action="store_true",
-        help="Only (re)submit configs with no usable result; reset each to its "
-        "inputs + submit.sl first.",
-    )
 
     # ---- report ----------------------------------------------------------
     p_report = sub.add_parser("report", help="Part 3: collect results into CSV + HTML.")
@@ -110,6 +111,32 @@ def build_parser() -> argparse.ArgumentParser:
         "(e.g. 1cores_1tasks_1cpt) or a path to a run directory (e.g. a "
         "non-hyperthreaded single-core run). Default: the 1 MPI x 1 OMP run.",
     )
+
+    # ---- status ----------------------------------------------------------
+    p_status = sub.add_parser(
+        "status",
+        help="Re-scan folders and refresh folder_index.html (run/running/error/"
+        "failed/pending), printing a summary.",
+    )
+    p_status.add_argument("--root", default="VASP_Benchmarking", help="Benchmark root directory.")
+    p_status.add_argument(
+        "--no-sacct",
+        action="store_true",
+        help="Skip sacct queries; 'running' is then inferred from recent "
+        "output-file activity instead of the scheduler.",
+    )
+
+    # ---- reset -----------------------------------------------------------
+    p_reset = sub.add_parser(
+        "reset",
+        help="Reset errored configs back to their inputs (they become pending, "
+        "so the next 'submit' relaunches them). Fix the error's cause first.",
+    )
+    p_reset.add_argument("--root", default="VASP_Benchmarking", help="Benchmark root directory.")
+    p_reset.add_argument(
+        "--dry-run", action="store_true", help="List errored configs without resetting."
+    )
+    p_reset.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
 
     # ---- clean -----------------------------------------------------------
     p_clean = sub.add_parser(
@@ -149,8 +176,11 @@ def main(argv: list[str] | None = None) -> int:
                 root=args.root,
                 dry_run=args.dry_run,
                 yes=args.yes,
-                retry_failed=args.retry_failed,
             )
+        elif args.command == "reset":
+            from .submit import reset
+
+            reset(root=args.root, dry_run=args.dry_run, yes=args.yes)
         elif args.command == "report":
             from .report import report
 
@@ -161,6 +191,19 @@ def main(argv: list[str] | None = None) -> int:
                 baseline=args.baseline,
                 skip_steps=args.skip_steps,
             )
+        elif args.command == "status":
+            from .status import STATUS_TEXT, refresh_index
+
+            out_path, entries = refresh_index(args.root, use_sacct=not args.no_sacct)
+            counts: dict[str, int] = {}
+            for e in entries:
+                counts[e["status"]] = counts.get(e["status"], 0) + 1
+            order = ["done", "running", "error", "failed", "pending"]
+            summary = ", ".join(
+                f"{counts.get(k, 0)} {STATUS_TEXT[k].split(' ', 1)[-1]}" for k in order
+            )
+            print(f"Rewrote {out_path} ({len(entries)} folder(s): {summary}).")
+            print("Refresh the page in your browser to see the updated statuses.")
         elif args.command == "clean":
             from .clean import clean
 

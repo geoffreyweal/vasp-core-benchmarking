@@ -1,36 +1,29 @@
-"""Part 2: submit every generated ``submit.sl`` to SLURM."""
+"""Part 2: submit the generated jobs to SLURM (and reset errored ones).
+
+``submit`` classifies every config first (same rules as the folder status page)
+and only submits the ones that need running - **pending** configs, and
+**failed** ones (which are reset to their inputs first). Completed, running and
+errored configs are never submitted: errors usually need attention (more
+memory, a longer time limit, a fixed input) before rerunning, so clear them
+explicitly with ``reset``, which returns them to pending.
+"""
 
 from __future__ import annotations
 
-import re
 import subprocess
 import time
 from pathlib import Path
 
-from .outcar import parse_loop_times
+from . import status as status_mod
 
 # Pause briefly after this many submissions to avoid hammering the scheduler /
 # tripping QOS submission-rate limits.
 PAUSE_EVERY = 10
 PAUSE_SECONDS = 2
 
-# Directory names look like "8cores_4tasks_2cpt" (see generate.config_dirname).
-_CONFIG_DIR_RE = re.compile(r"(\d+)cores_(\d+)tasks_(\d+)cpt")
-
-# Files kept when resetting a failed run before resubmitting it.
+# Files kept when resetting a run before resubmitting it. These are the
+# per-config inputs copied in by setup, plus the generated submit.sl.
 RESET_KEEP = {"INCAR", "KPOINTS", "POTCAR", "POSCAR", "submit.sl"}
-
-
-def has_result(run_dir: Path) -> bool:
-    """True if this run produced a usable average-electronic-step result.
-
-    Matches the report's validity test: an OUTCAR with at least two ``LOOP``
-    lines (so the first, setup-heavy step can be dropped).
-    """
-    outcar = run_dir / "OUTCAR"
-    if not outcar.is_file():
-        return False
-    return len(parse_loop_times(outcar)) >= 2
 
 
 def reset_run_dir(run_dir: Path) -> int:
@@ -47,82 +40,91 @@ def reset_run_dir(run_dir: Path) -> int:
     return removed
 
 
-def _sort_key(script: Path) -> tuple:
-    """Sort submit.sl scripts numerically by (total cores, ntasks, cpus-per-task).
-
-    A plain ``sorted()`` would order names lexicographically ("128cores" before
-    "16cores" before "8cores"); parsing the numbers gives ascending core counts.
-    Directories that do not match the expected pattern sort last, by path.
-    """
-    match = _CONFIG_DIR_RE.search(script.parent.name)
-    if match:
-        total, ntasks, cpt = (int(g) for g in match.groups())
-        return (0, total, ntasks, cpt, "")
-    return (1, 0, 0, 0, str(script))
-
-
 def find_submit_scripts(root: str) -> list[Path]:
     """Return every ``submit.sl`` beneath ``root``, sorted by ascending cores."""
     root_dir = Path(root)
     if not root_dir.is_dir():
         raise FileNotFoundError(f"benchmark root not found: {root_dir}")
-    return sorted(root_dir.rglob("submit.sl"), key=_sort_key)
+    return sorted(
+        root_dir.rglob("submit.sl"),
+        key=lambda p: status_mod.config_sort_key(p.parent),
+    )
+
+
+def _print_plan(to_submit: list[tuple[Path, bool]]) -> None:
+    """Show exactly which folders would be submitted, and why."""
+    print(f"Will submit {len(to_submit)} job(s):")
+    for script, needs_reset in to_submit:
+        why = "failed - will reset first" if needs_reset else "pending"
+        print(f"  {script.parent.name}  ({why})")
 
 
 def submit(
     root: str = "VASP_Benchmarking",
     dry_run: bool = False,
     yes: bool = False,
-    retry_failed: bool = False,
 ) -> int:
-    """Submit benchmark jobs. Returns the number successfully submitted.
+    """Submit the configs that need running. Returns the number submitted.
 
-    By default every config is submitted. With ``retry_failed``, only configs
-    that have **not** produced a usable average-electronic-step result are
-    (re)submitted, and each such directory is first reset to just its inputs and
-    submit.sl.
+    Every config is classified first (same rules as the folder status page) and
+    only **pending** and **failed** ones are submitted - failed directories are
+    reset to their inputs first. Completed, still-running and errored configs
+    are skipped; clear errors explicitly with :func:`reset` once you have
+    addressed their cause. The exact list of folders to be submitted is shown
+    before the confirmation prompt.
+
+    Each script is submitted exactly as it sits in its folder.
     """
     scripts = find_submit_scripts(root)
     if not scripts:
         print(f"No submit.sl files found under {root}/")
         return 0
 
-    if retry_failed:
-        all_n = len(scripts)
-        scripts = [s for s in scripts if not has_result(s.parent)]
+    to_submit: list[tuple[Path, bool]] = []  # (script, needs_reset)
+    counts = {"done": 0, "running": 0, "error": 0}
+    for s in scripts:
+        st, _detail = status_mod.run_status(s.parent)
+        if st in ("pending", "failed"):
+            to_submit.append((s, st == "failed"))
+        else:
+            counts[st] += 1
+    print(
+        f"Found {len(scripts)} configs under {root}/: "
+        f"{counts['done']} run, {counts['running']} running, "
+        f"{counts['error']} error (all skipped); {len(to_submit)} eligible."
+    )
+    if counts["error"]:
         print(
-            f"Found {all_n} configs under {root}/; "
-            f"{all_n - len(scripts)} already have a result, "
-            f"{len(scripts)} to retry."
+            "Errored configs are never resubmitted as-is - fix the cause, then "
+            "run 'vasp-core-benchmarking reset' to make them pending."
         )
-        if not scripts:
-            print("Nothing to retry - every config has a usable result.")
-            return 0
-    else:
-        print(f"Found {len(scripts)} submit.sl scripts under {root}/")
+
+    if not to_submit:
+        print("Nothing to submit.")
+        return 0
+
+    # Always show exactly what would be launched before doing anything.
+    _print_plan(to_submit)
 
     if dry_run:
-        for script in scripts:
-            prefix = "reset + " if retry_failed else ""
-            print(f"[dry-run] {prefix}sbatch (cwd={script.parent}) submit.sl")
+        print("[dry-run] nothing was submitted.")
         return 0
 
     if not yes:
-        action = (
-            f"Reset and resubmit {len(scripts)} failed/incomplete jobs"
-            if retry_failed
-            else f"Submit all {len(scripts)} jobs to SLURM"
+        reply = (
+            input(f"Submit these {len(to_submit)} job(s) to SLURM? [y/N] ")
+            .strip()
+            .lower()
         )
-        reply = input(f"{action}? [y/N] ").strip().lower()
         if reply not in ("y", "yes"):
             print("Aborted.")
             return 0
 
     submitted = 0
-    for i, script in enumerate(scripts, start=1):
-        if retry_failed:
+    for i, (script, needs_reset) in enumerate(to_submit, start=1):
+        if needs_reset:
             removed = reset_run_dir(script.parent)
-            print(f"[{i}/{len(scripts)}] reset {script.parent} ({removed} files removed)")
+            print(f"[{i}/{len(to_submit)}] reset {script.parent} ({removed} files removed)")
         try:
             result = subprocess.run(
                 ["sbatch", script.name],
@@ -131,16 +133,80 @@ def submit(
                 text=True,
                 check=True,
             )
-            print(f"[{i}/{len(scripts)}] {script.parent}: {result.stdout.strip()}")
+            print(f"[{i}/{len(to_submit)}] {script.parent}: {result.stdout.strip()}")
             submitted += 1
         except FileNotFoundError:
             print("ERROR: 'sbatch' not found - are you on a SLURM login node?")
             break
         except subprocess.CalledProcessError as exc:
-            print(f"[{i}/{len(scripts)}] FAILED {script.parent}: {exc.stderr.strip()}")
+            print(f"[{i}/{len(to_submit)}] FAILED {script.parent}: {exc.stderr.strip()}")
 
-        if i % PAUSE_EVERY == 0 and i < len(scripts):
+        if i % PAUSE_EVERY == 0 and i < len(to_submit):
             time.sleep(PAUSE_SECONDS)
 
-    print(f"Submitted {submitted}/{len(scripts)} jobs.")
+    print(f"Submitted {submitted}/{len(to_submit)} jobs.")
     return submitted
+
+
+def reset(
+    root: str = "VASP_Benchmarking",
+    dry_run: bool = False,
+    yes: bool = False,
+) -> int:
+    """Reset every **errored** config back to its inputs. Returns the count.
+
+    A config counts as errored when it finished with an identifiable error (a
+    VASP abort message in the OUTCAR, an abnormal SLURM terminal state, or an
+    error line in ``slurm-<id>.out``). Resetting deletes everything except the
+    inputs (:data:`RESET_KEEP`), returning the config to **pending** so the
+    next ``submit`` picks it up. Completed, running, failed and pending configs
+    are untouched.
+
+    Fix the cause of the error first (e.g. more memory or a longer time limit);
+    ``reset`` only clears the failed run's artefacts so the folder starts clean.
+    """
+    root_dir = Path(root)
+    if not root_dir.is_dir():
+        raise FileNotFoundError(f"benchmark root not found: {root_dir}")
+
+    targets: list[tuple[Path, str]] = []
+    for d in status_mod.config_dirs(root_dir):
+        st, detail = status_mod.run_status(d)
+        if st == "error":
+            targets.append((d, detail or "unknown error"))
+
+    if not targets:
+        print(f"No errored configs under {root_dir}/ - nothing to reset.")
+        return 0
+
+    print(f"{len(targets)} errored config(s) under {root_dir}/:")
+    for d, detail in targets:
+        print(f"  {d.name}: {detail}")
+
+    if dry_run:
+        print("[dry-run] no files were removed.")
+        return 0
+
+    if not yes:
+        reply = (
+            input(f"Reset {len(targets)} errored config(s) to their inputs? [y/N] ")
+            .strip()
+            .lower()
+        )
+        if reply not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+
+    for d, _detail in targets:
+        removed = reset_run_dir(d)
+        print(f"  reset {d} ({removed} files removed)")
+
+    # Refresh the status page so these configs show as pending again.
+    try:
+        index_path, _entries = status_mod.refresh_index(root_dir)
+        print(f"Refreshed folder status page -> {index_path}")
+    except FileNotFoundError:
+        pass  # unusual; the reset itself is done
+
+    print(f"Reset {len(targets)} config(s); run 'submit' to relaunch them.")
+    return len(targets)
