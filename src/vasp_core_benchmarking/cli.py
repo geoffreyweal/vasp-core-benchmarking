@@ -91,6 +91,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument("--root", default="VASP_Benchmarking", help="Benchmark root directory.")
     p_submit.add_argument("--dry-run", action="store_true", help="List jobs without submitting.")
     p_submit.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
+    p_submit.add_argument(
+        "--skip-steps",
+        type=int,
+        default=5,
+        help="Warm-up electronic steps a run must exceed to count as done "
+        "(default 5); a config with no more than this is treated as needing "
+        "a (re)run. Match report's --skip-steps.",
+    )
 
     # ---- report ----------------------------------------------------------
     p_report = sub.add_parser("report", help="Part 3: collect results into CSV + HTML.")
@@ -125,6 +133,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip sacct queries; 'running' is then inferred from recent "
         "output-file activity instead of the scheduler.",
     )
+    p_status.add_argument(
+        "--skip-steps",
+        type=int,
+        default=5,
+        help="A config counts as 'run' only once it has more than this many "
+        "electronic steps (default 5). Match report's --skip-steps.",
+    )
 
     # ---- reset -----------------------------------------------------------
     p_reset = sub.add_parser(
@@ -134,9 +149,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_reset.add_argument("--root", default="VASP_Benchmarking", help="Benchmark root directory.")
     p_reset.add_argument(
-        "--dry-run", action="store_true", help="List errored configs without resetting."
+        "--dry-run", action="store_true", help="List configs to reset without resetting."
     )
     p_reset.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
+    p_reset.add_argument(
+        "--skip-steps",
+        type=int,
+        default=5,
+        help="Reset configs with no more than this many electronic steps "
+        "(default 5); runs that exceeded it are kept. Match report's --skip-steps.",
+    )
 
     # ---- clean -----------------------------------------------------------
     p_clean = sub.add_parser(
@@ -176,11 +198,17 @@ def main(argv: list[str] | None = None) -> int:
                 root=args.root,
                 dry_run=args.dry_run,
                 yes=args.yes,
+                skip_steps=args.skip_steps,
             )
         elif args.command == "reset":
             from .submit import reset
 
-            reset(root=args.root, dry_run=args.dry_run, yes=args.yes)
+            reset(
+                root=args.root,
+                dry_run=args.dry_run,
+                yes=args.yes,
+                skip_steps=args.skip_steps,
+            )
         elif args.command == "report":
             from .report import report
 
@@ -194,7 +222,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "status":
             from .status import STATUS_TEXT, refresh_index
 
-            out_path, entries = refresh_index(args.root, use_sacct=not args.no_sacct)
+            out_path, entries = refresh_index(
+                args.root, use_sacct=not args.no_sacct, skip_steps=args.skip_steps
+            )
             counts: dict[str, int] = {}
             for e in entries:
                 counts[e["status"]] = counts.get(e["status"], 0) + 1

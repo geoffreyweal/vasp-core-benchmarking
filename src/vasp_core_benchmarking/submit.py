@@ -1,11 +1,13 @@
-"""Part 2: submit the generated jobs to SLURM (and reset errored ones).
+"""Part 2: submit the generated jobs to SLURM (and reset unusable ones).
 
 ``submit`` classifies every config first (same rules as the folder status page)
 and only submits the ones that need running - **pending** configs, and
-**failed** ones (which are reset to their inputs first). Completed, running and
-errored configs are never submitted: errors usually need attention (more
+**failed** ones (which are reset to their inputs first). Runs that already
+produced a usable result (more than ``skip_steps`` electronic steps) count as
+**done** even if SLURM later killed them, and are left alone; **running** and
+**errored** configs are also skipped. Errors usually need attention (more
 memory, a longer time limit, a fixed input) before rerunning, so clear them
-explicitly with ``reset``, which returns them to pending.
+explicitly with ``reset``.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import time
 from pathlib import Path
 
 from . import status as status_mod
+from .status import DEFAULT_SKIP_STEPS
 
 # Pause briefly after this many submissions to avoid hammering the scheduler /
 # tripping QOS submission-rate limits.
@@ -63,15 +66,17 @@ def submit(
     root: str = "VASP_Benchmarking",
     dry_run: bool = False,
     yes: bool = False,
+    skip_steps: int = DEFAULT_SKIP_STEPS,
 ) -> int:
     """Submit the configs that need running. Returns the number submitted.
 
     Every config is classified first (same rules as the folder status page) and
     only **pending** and **failed** ones are submitted - failed directories are
-    reset to their inputs first. Completed, still-running and errored configs
-    are skipped; clear errors explicitly with :func:`reset` once you have
-    addressed their cause. The exact list of folders to be submitted is shown
-    before the confirmation prompt.
+    reset to their inputs first. Runs that already logged more than
+    ``skip_steps`` electronic steps count as done and are skipped, as are
+    still-running and errored configs; clear errors explicitly with
+    :func:`reset` once you have addressed their cause. The exact list of folders
+    to be submitted is shown before the confirmation prompt.
 
     Each script is submitted exactly as it sits in its folder.
     """
@@ -83,7 +88,7 @@ def submit(
     to_submit: list[tuple[Path, bool]] = []  # (script, needs_reset)
     counts = {"done": 0, "running": 0, "error": 0}
     for s in scripts:
-        st, _detail = status_mod.run_status(s.parent)
+        st, _detail = status_mod.run_status(s.parent, skip_steps=skip_steps)
         if st in ("pending", "failed"):
             to_submit.append((s, st == "failed"))
         else:
@@ -152,18 +157,22 @@ def reset(
     root: str = "VASP_Benchmarking",
     dry_run: bool = False,
     yes: bool = False,
+    skip_steps: int = DEFAULT_SKIP_STEPS,
 ) -> int:
-    """Reset every **errored** config back to its inputs. Returns the count.
+    """Reset every finished config **without a usable result**. Returns the count.
 
-    A config counts as errored when it finished with an identifiable error (a
-    VASP abort message in the OUTCAR, an abnormal SLURM terminal state, or an
-    error line in ``slurm-<id>.out``). Resetting deletes everything except the
-    inputs (:data:`RESET_KEEP`), returning the config to **pending** so the
-    next ``submit`` picks it up. Completed, running, failed and pending configs
-    are untouched.
+    A config is reset when it has been launched, is no longer running, and did
+    **not** log more than ``skip_steps`` electronic steps - i.e. it produced no
+    usable timing data (the ``error`` and ``failed`` states). Resetting deletes
+    everything except the inputs (:data:`RESET_KEEP`), returning the config to
+    **pending** so the next ``submit`` picks it up.
 
-    Fix the cause of the error first (e.g. more memory or a longer time limit);
-    ``reset`` only clears the failed run's artefacts so the folder starts clean.
+    Runs that already logged more than ``skip_steps`` steps are **never** reset,
+    even if SLURM killed them afterwards (e.g. at the walltime) - their timing
+    data is usable, so it is kept. Running and pending configs are untouched.
+
+    Fix the cause of any error first (e.g. more memory or a longer time limit);
+    ``reset`` only clears the unusable run's artefacts so the folder starts clean.
     """
     root_dir = Path(root)
     if not root_dir.is_dir():
@@ -171,17 +180,24 @@ def reset(
 
     targets: list[tuple[Path, str]] = []
     for d in status_mod.config_dirs(root_dir):
-        st, detail = status_mod.run_status(d)
-        if st == "error":
-            targets.append((d, detail or "unknown error"))
+        st, detail = status_mod.run_status(d, skip_steps=skip_steps)
+        if st in ("error", "failed"):
+            n = status_mod.n_electronic_steps(d)
+            reason = f"{n} electronic step(s), need > {skip_steps}"
+            if detail:
+                reason += f"; {detail}"
+            targets.append((d, reason))
 
     if not targets:
-        print(f"No errored configs under {root_dir}/ - nothing to reset.")
+        print(
+            f"No configs under {root_dir}/ lack a usable result "
+            f"(> {skip_steps} electronic steps) - nothing to reset."
+        )
         return 0
 
-    print(f"{len(targets)} errored config(s) under {root_dir}/:")
-    for d, detail in targets:
-        print(f"  {d.name}: {detail}")
+    print(f"{len(targets)} config(s) under {root_dir}/ with no usable result:")
+    for d, reason in targets:
+        print(f"  {d.name}: {reason}")
 
     if dry_run:
         print("[dry-run] no files were removed.")
@@ -189,7 +205,7 @@ def reset(
 
     if not yes:
         reply = (
-            input(f"Reset {len(targets)} errored config(s) to their inputs? [y/N] ")
+            input(f"Reset {len(targets)} config(s) to their inputs? [y/N] ")
             .strip()
             .lower()
         )
@@ -197,13 +213,13 @@ def reset(
             print("Aborted.")
             return 0
 
-    for d, _detail in targets:
+    for d, _reason in targets:
         removed = reset_run_dir(d)
         print(f"  reset {d} ({removed} files removed)")
 
     # Refresh the status page so these configs show as pending again.
     try:
-        index_path, _entries = status_mod.refresh_index(root_dir)
+        index_path, _entries = status_mod.refresh_index(root_dir, skip_steps=skip_steps)
         print(f"Refreshed folder status page -> {index_path}")
     except FileNotFoundError:
         pass  # unusual; the reset itself is done

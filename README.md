@@ -168,9 +168,16 @@ the ones that need running are submitted, in ascending core order, pausing brief
 every 10 submissions to avoid scheduler rate limits:
 
 - **pending** (never launched — only inputs present) → submitted;
-- **failed** (launched, incomplete, no identifiable error) → **reset to its inputs
-  first**, then submitted;
-- **completed**, **running** and **errored** configs are skipped.
+- **failed** (launched, but produced no usable timing data — see below) → **reset to
+  its inputs first**, then submitted;
+- **run**, **running** and **errored** configs are skipped.
+
+A config counts as having *run* once its `OUTCAR` logged **more than `--skip-steps`
+electronic (`LOOP:`) steps** (default 5) — enough that at least one usable step
+remains after the warm-up steps are dropped. This is the same usable-result test the
+report applies, so a job that hit the walltime but still logged enough steps is a
+successful benchmark and is left alone. Pass `--skip-steps` to match the value you
+report with.
 
 `submit` prints the exact plan (which folders, and why) before the confirmation
 prompt, so you always see what will launch.
@@ -182,11 +189,12 @@ leftovers) before resubmitting.
 > The reset keeps only those five files. If your system needs extra inputs (e.g.
 > `ML_FF`), re-run `setup` to repopulate them before retrying, or copy them back in.
 
-Errored configs — those that ended with an identifiable failure (a VASP abort
-message in the `OUTCAR`, an abnormal SLURM terminal state such as `TIMEOUT` or
-`OUT_OF_MEMORY`, or an error line in `slurm-<id>.out`) — are **never** resubmitted
-automatically, because they usually need attention first (more memory, a longer
-walltime, a fixed input). Fix the cause, then clear them with `reset` (below).
+Errored configs — those that produced no usable result **and** ended with an
+identifiable failure (a VASP abort message in the `OUTCAR`, an abnormal SLURM
+terminal state such as `TIMEOUT` or `OUT_OF_MEMORY`, or an error line in
+`slurm-<id>.out`) — are **never** resubmitted automatically, because they usually
+need attention first (more memory, a longer walltime, a fixed input). Fix the cause,
+then clear them with `reset` (below).
 
 ### Part 3 — `report`: measure utilisation and efficiency
 
@@ -242,42 +250,52 @@ whose OUTCAR has no usable result, is reported as a clear error.
 ```bash
 vasp-core-benchmarking status               # re-scan + refresh folder_index.html
 vasp-core-benchmarking status --no-sacct    # classify from local files only
+vasp-core-benchmarking status --skip-steps 10  # match the report's warm-up count
 ```
 
 Re-scans every layout folder under `--root`, classifies each run, prints a summary,
 and (re)writes a self-contained `folder_index.html` in the root — a snapshot table
-of every config's layout (total cores, MPI ranks, OpenMP threads) and current state,
-with a status filter. Open it in a browser and re-run `status` (or `report`) to
-refresh it.
+of every config's layout (total cores, MPI ranks, OpenMP threads), its electronic-step
+count, and current state, with a status filter. Open it in a browser and re-run
+`status` (or `report`) to refresh it.
 
 Each config is classified as one of:
 
 | State | Meaning |
 | --- | --- |
-| **run** | `OUTCAR` ends with VASP's normal-termination timing footer and has a final energy. |
-| **running** | Launched, incomplete, and its SLURM job is still active (via `sacct`; without it, its output files were written to within the last 30 minutes). |
-| **error** | Ended with an identifiable failure — a VASP abort in the `OUTCAR`, an abnormal SLURM state (`TIMEOUT`, `OUT_OF_MEMORY`, …), or an error line in `slurm-<id>.out`. |
-| **failed** | Launched and incomplete, not still running, but no specific error could be identified (e.g. killed without a message). |
+| **run** | Finished (no longer active) with a usable result — **more than `--skip-steps` electronic (`LOOP:`) steps** (default 5). Counts even if SLURM later killed the job (e.g. at the walltime): the timing data is usable. |
+| **running** | Launched, not yet a usable result, and its SLURM job is still active (via `sacct`; without it, its output files were written to within the last 30 minutes). |
+| **error** | Finished with no usable result **and** an identifiable failure — a VASP abort in the `OUTCAR`, an abnormal SLURM state (`TIMEOUT`, `OUT_OF_MEMORY`, …), or an error line in `slurm-<id>.out`. |
+| **failed** | Finished with no usable result and not still running, but no specific error could be identified (e.g. killed without a message, or it ran no more than `--skip-steps` steps). |
 | **pending** | No sign the run has been launched yet (only input files). |
+
+Because "run" is defined by the step count, `--skip-steps` sets the same threshold
+`report` uses; pass the value you intend to report with so the two agree.
 
 With `--no-sacct` the scheduler is not queried: "running" is inferred from recent
 output-file activity instead, so the classification still works from the folder
 contents alone.
 
-### `reset`: clear errored configs
+### `reset`: clear configs with no usable result
 
 ```bash
-vasp-core-benchmarking reset --dry-run   # list errored configs without touching them
-vasp-core-benchmarking reset             # prompts for confirmation
-vasp-core-benchmarking reset --yes       # no prompt
+vasp-core-benchmarking reset --dry-run       # list what would be reset, and why
+vasp-core-benchmarking reset                 # prompts for confirmation
+vasp-core-benchmarking reset --yes           # no prompt
+vasp-core-benchmarking reset --skip-steps 10 # match the report's warm-up count
 ```
 
-Resets every **errored** config back to its inputs (`INCAR`, `KPOINTS`, `POTCAR`,
-`POSCAR`, `submit.sl`), deleting the failed run's artefacts and returning it to
-**pending** so the next `submit` relaunches it. Completed, running, failed and
-pending configs are left untouched.
+Resets every finished config that produced **no usable result** — the **error** and
+**failed** states, i.e. those that logged no more than `--skip-steps` electronic
+steps — back to its inputs (`INCAR`, `KPOINTS`, `POTCAR`, `POSCAR`, `submit.sl`),
+deleting the failed run's artefacts and returning it to **pending** so the next
+`submit` relaunches it.
 
-Fix the cause of the error first (e.g. raise the memory or walltime in your include
+Runs that already logged more than `--skip-steps` steps are **never** reset, even if
+SLURM killed them afterwards — their timing data is usable, so it is kept. Running and
+pending configs are left untouched too.
+
+Fix the cause of any error first (e.g. raise the memory or walltime in your include
 and re-run `setup` for any brand-new layouts), then `reset` and `submit`.
 
 ### Optional — `clean`: reclaim disk space

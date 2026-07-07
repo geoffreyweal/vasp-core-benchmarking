@@ -20,9 +20,14 @@ from datetime import datetime
 from pathlib import Path
 
 from . import sacct
-from .outcar import error_signature, final_energy, run_completed
+from .outcar import error_signature, parse_loop_times
 
 INDEX_FILENAME = "folder_index.html"
+
+# Warm-up electronic steps dropped from each run's timing average (report's
+# --skip-steps default). A run is only a usable benchmark result once it has run
+# MORE than this many electronic steps, so at least one remains after the drop.
+DEFAULT_SKIP_STEPS = 5
 
 # Directory names look like "8cores_4tasks_2cpt" (see generate.config_dirname).
 _CONFIG_DIR_RE = re.compile(r"(\d+)cores_(\d+)tasks_(\d+)cpt")
@@ -128,33 +133,55 @@ def _recently_active(run_dir: Path) -> bool:
     return bool(mtimes) and (time.time() - max(mtimes)) < ACTIVITY_WINDOW_S
 
 
-def run_status(run_dir: Path, use_sacct: bool = True) -> tuple[str, str | None]:
+def n_electronic_steps(run_dir: Path) -> int:
+    """Number of electronic (``LOOP:``) steps timed in this run's OUTCAR."""
+    outcar = run_dir / "OUTCAR"
+    return len(parse_loop_times(outcar)) if outcar.is_file() else 0
+
+
+def has_usable_result(run_dir: Path, skip_steps: int = DEFAULT_SKIP_STEPS) -> bool:
+    """Whether this run produced a usable average-electronic-step result.
+
+    Matches the report's validity test: MORE than ``skip_steps`` electronic
+    (``LOOP:``) steps, so at least one remains after the warm-up steps are
+    dropped. This is what "the benchmark ran" means for this tool - a job that
+    logged enough steps has usable timing data even if SLURM later killed it
+    (e.g. at the walltime), so its result must not be thrown away.
+    """
+    return n_electronic_steps(run_dir) > skip_steps
+
+
+def run_status(
+    run_dir: Path, use_sacct: bool = True, skip_steps: int = DEFAULT_SKIP_STEPS
+) -> tuple[str, str | None]:
     """Classify a config folder; returns ``(status, detail)``.
 
-    * **done** - the OUTCAR ends with VASP's normal-termination timing footer
-      and holds a final ``energy(sigma->0)``: the calculation completed
-      successfully. (An energy alone is not enough - it appears after the
-      first SCF loop, long before a job finishes.)
-    * **running** - launched, not complete, and its SLURM job is still active
+    "Ran" is defined by the timing data, not by SLURM's exit: a run counts as
+    **done** once it has logged more than ``skip_steps`` electronic steps (so at
+    least one usable step remains after the warm-up steps are dropped).
+
+    * **done** - finished (no longer active) with a usable result, i.e. more
+      than ``skip_steps`` electronic steps. A job that hit the walltime but
+      still logged enough steps counts as done - its timing data is usable.
+    * **running** - launched, not yet done, and its SLURM job is still active
       according to ``sacct``; without sacct, "output files written to within
       the last :data:`ACTIVITY_WINDOW_S`" is used instead, so this works from
       the folder contents alone;
-    * **error** - finished with an identifiable error; ``detail`` says what was
-      found (a VASP abort message in the OUTCAR, an abnormal SLURM terminal
-      state such as ``TIMEOUT``, or an error line in ``slurm-<id>.out``);
-    * **failed** - launched and not complete, not still running, but no
-      specific error could be identified (e.g. killed without a message);
+    * **error** - finished without a usable result and with an identifiable
+      error; ``detail`` says what was found (a VASP abort message in the OUTCAR,
+      an abnormal SLURM terminal state such as ``TIMEOUT``, or an error line in
+      ``slurm-<id>.out``);
+    * **failed** - finished without a usable result and not still running, but
+      no specific error could be identified (e.g. killed without a message, or
+      it ran no more than ``skip_steps`` steps);
     * **pending** - no sign the run has been launched yet (only input files).
 
     ``detail`` is None for every status except ``error``. Everything except the
     sacct refinement comes from files in the run directory, so the
     classification works with ``use_sacct=False`` too.
     """
-    outcar = run_dir / "OUTCAR"
-    if outcar.is_file() and run_completed(outcar) and final_energy(outcar) is not None:
-        return "done", None
     started = (
-        outcar.is_file()
+        (run_dir / "OUTCAR").is_file()
         or (run_dir / "OSZICAR").is_file()
         or sacct.find_job_id(run_dir) is not None
     )
@@ -165,6 +192,10 @@ def run_status(run_dir: Path, use_sacct: bool = True) -> tuple[str, str | None]:
     active = sacct.is_running(run_dir) if use_sacct else None
     if active is None:
         active = _recently_active(run_dir)
+    # A finished run that logged enough electronic steps is a successful
+    # benchmark run, regardless of how SLURM recorded the job's exit.
+    if not active and has_usable_result(run_dir, skip_steps):
+        return "done", None
     if active:
         return "running", None
     detail = _error_evidence(run_dir, use_sacct)
@@ -173,18 +204,21 @@ def run_status(run_dir: Path, use_sacct: bool = True) -> tuple[str, str | None]:
     return "failed", None
 
 
-def scan_configs(root_dir: Path, use_sacct: bool = True) -> list[dict]:
+def scan_configs(
+    root_dir: Path, use_sacct: bool = True, skip_steps: int = DEFAULT_SKIP_STEPS
+) -> list[dict]:
     """Read every config folder into ``{folder, total_cores, ntasks, ...}``."""
     entries: list[dict] = []
     for d in config_dirs(root_dir):
         total, ntasks, cpt = parse_layout(d.name)  # type: ignore[misc]
-        status, detail = run_status(d, use_sacct=use_sacct)
+        status, detail = run_status(d, use_sacct=use_sacct, skip_steps=skip_steps)
         entries.append(
             {
                 "folder": d.name,
                 "total_cores": total,
                 "ntasks": ntasks,
                 "cpus_per_task": cpt,
+                "n_steps": n_electronic_steps(d),
                 "status": status,
                 "detail": detail,
                 "has_result": status == "done",
@@ -193,13 +227,19 @@ def scan_configs(root_dir: Path, use_sacct: bool = True) -> list[dict]:
     return entries
 
 
-def build_index_html(entries: list[dict], generated_at: str | None = None) -> str:
+def build_index_html(
+    entries: list[dict],
+    generated_at: str | None = None,
+    skip_steps: int = DEFAULT_SKIP_STEPS,
+) -> str:
     """Build the self-contained folder status page.
 
     A summary line, a status filter, and a reference table of every config
-    (layout + run state). ``generated_at`` stamps the page with when it was
-    scanned; since the page is a static snapshot (a browser opening a local file
-    cannot re-scan the folders), this tells the reader how fresh it is.
+    (layout, electronic-step count + run state). ``generated_at`` stamps the
+    page with when it was scanned; since the page is a static snapshot (a
+    browser opening a local file cannot re-scan the folders), this tells the
+    reader how fresh it is. ``skip_steps`` is noted so the "> N steps = run"
+    rule behind the statuses is visible.
     """
 
     def esc(x: str) -> str:
@@ -227,6 +267,7 @@ def build_index_html(entries: list[dict], generated_at: str | None = None) -> st
             f'<td class="num">{esc(e["total_cores"])}</td>'
             f'<td class="num">{esc(e["ntasks"])}</td>'
             f'<td class="num">{esc(e["cpus_per_task"])}</td>'
+            f'<td class="num">{esc(e.get("n_steps", 0))}</td>'
             f'<td class="{status_cls}">{status}</td></tr>'
         )
     table_rows = "\n".join(rows)
@@ -272,7 +313,9 @@ def build_index_html(entries: list[dict], generated_at: str | None = None) -> st
 <h1>VASP core benchmarking — folder status</h1>
 <p class="lead">Every benchmark layout under the root, with its current run state.
 The folder's own <code>submit.sl</code> defines its layout; folder names encode
-<b>total cores</b>, <b>MPI ranks</b> (ntasks) and <b>OpenMP threads</b> (cpus-per-task).</p>
+<b>total cores</b>, <b>MPI ranks</b> (ntasks) and <b>OpenMP threads</b> (cpus-per-task).
+A config counts as <b>run</b> once it has logged more than <b>{esc(skip_steps)}</b>
+electronic steps (one usable step remains after the warm-up steps are dropped).</p>
 {asof_html}
 
 <div class="panel">
@@ -292,7 +335,7 @@ The folder's own <code>submit.sl</code> defines its layout; folder names encode
 <div class="panel wrap">
   <table>
     <thead><tr><th>Folder</th><th>Total cores</th><th>MPI ranks</th>
-      <th>OpenMP threads</th><th>Status</th></tr></thead>
+      <th>OpenMP threads</th><th>Electronic steps</th><th>Status</th></tr></thead>
     <tbody id="rows">
 {table_rows}
     </tbody>
@@ -311,22 +354,29 @@ applyFilter();
 """
 
 
-def _scan_and_write(root_dir: Path, use_sacct: bool) -> tuple[Path, list[dict]]:
+def _scan_and_write(
+    root_dir: Path, use_sacct: bool, skip_steps: int
+) -> tuple[Path, list[dict]]:
     """Scan ``root`` and write the status page, stamped with the scan time."""
-    entries = scan_configs(root_dir, use_sacct=use_sacct)
+    entries = scan_configs(root_dir, use_sacct=use_sacct, skip_steps=skip_steps)
     out_path = root_dir / INDEX_FILENAME
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    out_path.write_text(build_index_html(entries, generated_at=generated_at))
+    out_path.write_text(
+        build_index_html(entries, generated_at=generated_at, skip_steps=skip_steps)
+    )
     return out_path, entries
 
 
-def refresh_index(root_dir: str | Path, use_sacct: bool = True) -> tuple[Path, list[dict]]:
+def refresh_index(
+    root_dir: str | Path, use_sacct: bool = True, skip_steps: int = DEFAULT_SKIP_STEPS
+) -> tuple[Path, list[dict]]:
     """Re-scan ``root`` and (re)write ``folder_index.html``. Returns ``(path, entries)``.
 
     ``use_sacct`` lets the classifier query SLURM to tell a still-running job
     apart from a failed one; set it False to rely only on local files.
+    ``skip_steps`` sets the "> N electronic steps = a usable run" threshold.
     """
     root_dir = Path(root_dir)
     if not root_dir.is_dir():
         raise FileNotFoundError(f"benchmark root not found: {root_dir}")
-    return _scan_and_write(root_dir, use_sacct=use_sacct)
+    return _scan_and_write(root_dir, use_sacct=use_sacct, skip_steps=skip_steps)
