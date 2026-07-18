@@ -106,6 +106,9 @@ vasp-core-benchmarking setup --cores "1,2,4,8,16-128:8" --mem 32G --mem-per-cpu 
 This writes `VASP_Benchmarking/<total>cores_<ntasks>tasks_<cpt>cpt/`, each holding
 copies of the inputs and a `submit.sl`.
 
+> Prefer not to type a long command each time? Any of the options below can live
+> in an `options.txt` file instead — see [Options file (`options.txt`)](#options-file-optionstxt).
+
 ##### `--cores` (required)
 
 A comma-separated list of single values and inclusive `start-end` ranges. A range
@@ -154,6 +157,41 @@ gives 30:00 up to 16 cores, 15:00 up to 64, and 10:00 beyond.
 > When `--mem`/`--mem-per-cpu` or `--time-policy` is set, the tool writes that
 > directive itself and **overrides** the matching `--mem`/`--mem-per-cpu`/`--time`
 > in the include. With a time set, `setup` also reports the total requested walltime.
+
+#### Options file (`options.txt`)
+
+Rather than passing everything on the command line, you can write any of the
+`setup` options into a plain-text **`options.txt`**. If an `options.txt` is present
+in the directory you run from, `setup` picks it up automatically; point at a
+differently named file with `--options path/to/file`. **Command-line flags always
+override** the file, so you can keep a base `options.txt` and tweak a single run
+with a flag.
+
+Write one `key = value` per line, using the long option name without the leading
+`--` (e.g. `mem-per-cpu`). Blank lines and lines starting with `#` are ignored,
+`-` and `_` are interchangeable in keys, and quotes around a value are optional.
+The example command above becomes:
+
+```text
+# options.txt — VASP core-benchmarking setup
+cores        = 1,2,4,8,16-128:8
+mem          = 32G
+mem-per-cpu  = 2G
+time-policy  = 30:00,15:00@32
+```
+
+Then simply run:
+
+```bash
+vasp-core-benchmarking setup                    # auto-loads ./options.txt
+vasp-core-benchmarking setup --options my.txt   # use a differently named file
+vasp-core-benchmarking setup --cores 8,16,32    # override just --cores; file supplies the rest
+```
+
+Every `setup` option is accepted: `cores`, `jobname-prefix`, `vasp-files`,
+`include`, `mem`, `mem-per-cpu`, `time-policy`, `root`, `max-cpus-per-task` and
+`allowed-cpus-per-task`. An unknown key, a missing value or a duplicated key is
+reported with its line number, so typos are caught before any files are written.
 
 ### Part 2 — `submit`: send the jobs to SLURM
 

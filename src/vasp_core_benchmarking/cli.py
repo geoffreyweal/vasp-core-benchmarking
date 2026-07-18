@@ -16,10 +16,61 @@ import argparse
 import sys
 
 from . import __version__
+from .options_file import DEFAULT_OPTIONS_FILE, load_setup_options
 
 
 def _parse_int_list(value: str) -> list[int]:
     return [int(x) for x in value.split(",") if x.strip()]
+
+
+# setup options that can also be supplied via the options file. These are the
+# argparse dest names; keep in sync with the setup subparser and
+# options_file.KNOWN_OPTIONS. A dest listed in _SETUP_OPTION_CONVERTERS has its
+# raw file value passed through that converter (command-line values are already
+# typed by argparse); the rest are used as plain strings.
+_SETUP_OPTION_DESTS = (
+    "cores",
+    "jobname_prefix",
+    "vasp_files",
+    "include",
+    "mem",
+    "mem_per_cpu",
+    "time_policy",
+    "root",
+    "max_cpus_per_task",
+    "allowed_cpus_per_task",
+)
+_SETUP_OPTION_CONVERTERS = {
+    "max_cpus_per_task": int,
+    "allowed_cpus_per_task": _parse_int_list,
+}
+
+
+def _merge_setup_options(args, file_opts, source):
+    """Merge command-line args over options-file values into ``setup()`` kwargs.
+
+    Precedence is command-line flag > options file > ``setup()``'s own default,
+    the last achieved by omitting any option that was given in neither place.
+    """
+    kwargs = {}
+    for dest in _SETUP_OPTION_DESTS:
+        cli_val = getattr(args, dest)
+        if cli_val is not None:
+            kwargs[dest] = cli_val
+        elif dest in file_opts:
+            raw = file_opts[dest]
+            converter = _SETUP_OPTION_CONVERTERS.get(dest)
+            if converter is None:
+                kwargs[dest] = raw
+            else:
+                try:
+                    kwargs[dest] = converter(raw)
+                except ValueError as exc:
+                    flag = dest.replace("_", "-")
+                    raise ValueError(
+                        f"{source}: invalid value for '{flag}': {raw!r} ({exc})"
+                    ) from None
+    return kwargs
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,20 +86,31 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # ---- setup -----------------------------------------------------------
+    # Every setup option below defaults to None (rather than its real default) so
+    # that _merge_setup_options can tell "given on the command line" from "left to
+    # the options file / built-in default". The real defaults live in setup()'s
+    # signature and are noted in the help text here.
     p_setup = sub.add_parser("setup", help="Part 1: create benchmarking files.")
     p_setup.add_argument(
+        "--options",
+        help="Read setup options from this key=value file. If omitted, "
+        f"'{DEFAULT_OPTIONS_FILE}' in the working directory is used automatically "
+        "when present. Command-line flags override values from the file.",
+    )
+    p_setup.add_argument(
         "--cores",
-        required=True,
         help='Total core counts to benchmark, e.g. "1,2,4,8,16-128:8" '
-        '(ranges take a :step stride, SLURM array increment syntax).',
+        "(ranges take a :step stride, SLURM array increment syntax). Required, "
+        "unless given as 'cores' in the options file.",
     )
     p_setup.add_argument(
         "--jobname-prefix",
-        default="vasp_bench",
         help="Prefix for the SLURM job name; the layout "
-        "(e.g. _16cores_8MPI_2OMP) is appended.",
+        "(e.g. _16cores_8MPI_2OMP) is appended (default: vasp_bench).",
     )
-    p_setup.add_argument("--vasp-files", default="VASP_Files", help="Directory of VASP inputs.")
+    p_setup.add_argument(
+        "--vasp-files", help="Directory of VASP inputs (default: VASP_Files)."
+    )
     p_setup.add_argument(
         "--include",
         help="Submit-include file (default: vasp_core_benchmarking_submit_include.txt). "
@@ -70,7 +132,9 @@ def build_parser() -> argparse.ArgumentParser:
         "(N+1 times, N thresholds), e.g. '30:00,15:00,10:00@16,64' = <=16 cores "
         "30:00, <=64 cores 15:00, else 10:00. Overrides --time in the include.",
     )
-    p_setup.add_argument("--root", default="VASP_Benchmarking", help="Output root directory.")
+    p_setup.add_argument(
+        "--root", help="Output root directory (default: VASP_Benchmarking)."
+    )
     p_setup.add_argument(
         "--max-cpus-per-task",
         type=int,
@@ -179,18 +243,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "setup":
             from .generate import setup
 
-            setup(
-                cores=args.cores,
-                jobname_prefix=args.jobname_prefix,
-                vasp_files=args.vasp_files,
-                include=args.include,
-                root=args.root,
-                max_cpus_per_task=args.max_cpus_per_task,
-                allowed_cpus_per_task=args.allowed_cpus_per_task,
-                mem=args.mem,
-                mem_per_cpu=args.mem_per_cpu,
-                time_policy=args.time_policy,
-            )
+            # Pull any options.txt (auto-loaded, or the file named with --options)
+            # and merge, with command-line flags taking precedence.
+            file_opts, source = load_setup_options(args.options)
+            kwargs = _merge_setup_options(args, file_opts, source)
+            if source is not None and file_opts:
+                loaded = ", ".join(k.replace("_", "-") for k in sorted(file_opts))
+                print(f"Loaded setup options from {source}: {loaded}")
+
+            if "cores" not in kwargs:
+                raise ValueError(
+                    "no core counts given: pass --cores, or add a 'cores' line to "
+                    f"'{DEFAULT_OPTIONS_FILE}' (auto-loaded) or the file named with "
+                    "--options."
+                )
+            setup(**kwargs)
         elif args.command == "submit":
             from .submit import submit
 
