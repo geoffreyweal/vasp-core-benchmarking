@@ -74,7 +74,7 @@ An example of what this looks like is shown below:
 
 ```bash
 #SBATCH --account=nesi12345
-#SBATCH --partition=milan,genoa
+#SBATCH --partition=genoa
 #SBATCH --time=00:15:00
 #SBATCH --mem-per-cpu=2000
 #SBATCH --extra-node-info=1:*:1     # Use 1 socket, 1 thread/core (disables hyperthreading).
