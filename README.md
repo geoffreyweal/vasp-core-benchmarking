@@ -97,80 +97,12 @@ srun -K1 vasp_std
 #### Running `vasp-core-benchmarking setup`
 
 Once you have set up the `VASP_Files` folder and `vasp_core_benchmarking_submit_include.txt`
-file, run the following command to create your benchmarking environments:
+file, describe the sweep you want in a plain-text **`options.txt`** and run `setup`
+to create your benchmarking environments.
 
-```bash
-vasp-core-benchmarking setup --cores "1,2,4,8,16-128:8" --mem 32G --mem-per-cpu 2G --time-policy "30:00,15:00@32"
-```
-
-This writes `VASP_Benchmarking/<total>cores_<ntasks>tasks_<cpt>cpt/`, each holding
-copies of the inputs and a `submit.sl`.
-
-> Prefer not to type a long command each time? Any of the options below can live
-> in an `options.txt` file instead — see [Options file (`options.txt`)](#options-file-optionstxt).
-
-##### `--cores` (required)
-
-A comma-separated list of single values and inclusive `start-end` ranges. A range
-may take a `:step` stride (SLURM array increment syntax, where `:` means
-"increment by"), so `"1,2,4,8,16-128:8"` expands to `1, 2, 4, 8, 16, 24, 32, …, 128`.
-
-For each total core count, `setup` generates **every** `ntasks × cpus-per-task`
-factorisation — e.g. `16` → `16×1, 8×2, 4×4, 2×8, 1×16`.
-
-##### `--max-cpus-per-task` / `--allowed-cpus-per-task` (optional)
-
-Prune the layout grid. `--max-cpus-per-task` drops any layout whose OpenMP thread
-count exceeds the given value (e.g. a socket size); `--allowed-cpus-per-task`
-restricts OpenMP threads to a fixed set, e.g. `--allowed-cpus-per-task "1,2,4,8"`.
-
-##### `--jobname-prefix` (optional)
-
-Sets the SLURM job-name prefix (default `vasp_bench`). Each job is named
-`<prefix>_<total>cores_<ntasks>MPI_<cpt>OMP` (e.g. `vasp_bench_16cores_8MPI_2OMP`),
-so you can read the layout straight off the queue.
-
-##### `--mem` / `--mem-per-cpu` (optional)
-
-Make memory scale with core count instead of using a fixed value from the include:
-
-- `--mem` is a flat total-memory floor (e.g. `--mem 32G`).
-- `--mem-per-cpu` scales with cores (e.g. `--mem-per-cpu 2G`).
-
-With both set, each job gets whichever yields more — the floor at low core counts,
-switching to per-cpu once `total_cores × mem_per_cpu` exceeds it. Giving only one
-applies it flat to every job.
-
-##### `--time-policy` (optional)
-
-Make walltime depend on core count, in the form `"T1,T2,...@C1,C2,..."` (N+1
-walltimes for N ascending thresholds): `total_cores ≤ C1` gets `T1`, `≤ C2` gets
-`T2`, …, anything larger gets the last. For example, `"30:00,15:00,10:00@16,64"`
-gives 30:00 up to 16 cores, 15:00 up to 64, and 10:00 beyond.
-
-##### Other options
-
-`--vasp-files` (default `VASP_Files`) and `--include` (default
-`vasp_core_benchmarking_submit_include.txt`) point at the inputs and the include file;
-`--root` (default `VASP_Benchmarking`) sets the output directory.
-
-> When `--mem`/`--mem-per-cpu` or `--time-policy` is set, the tool writes that
-> directive itself and **overrides** the matching `--mem`/`--mem-per-cpu`/`--time`
-> in the include. With a time set, `setup` also reports the total requested walltime.
-
-#### Options file (`options.txt`)
-
-Rather than passing everything on the command line, you can write any of the
-`setup` options into a plain-text **`options.txt`**. If an `options.txt` is present
-in the directory you run from, `setup` picks it up automatically; point at a
-differently named file with `--options path/to/file`. **Command-line flags always
-override** the file, so you can keep a base `options.txt` and tweak a single run
-with a flag.
-
-Write one `key = value` per line, using the long option name without the leading
-`--` (e.g. `mem-per-cpu`). Blank lines and lines starting with `#` are ignored,
-`-` and `_` are interchangeable in keys, and quotes around a value are optional.
-The example command above becomes:
+Write one `key = value` per line, using the option names described below. Blank
+lines and lines starting with `#` are ignored, `-` and `_` are interchangeable in
+keys, and quotes around a value are optional. A typical `options.txt` looks like:
 
 ```text
 # options.txt — VASP core-benchmarking setup
@@ -180,18 +112,67 @@ mem-per-cpu  = 2G
 time-policy  = 30:00,15:00@32
 ```
 
-Then simply run:
+If an `options.txt` is present in the directory you run from, `setup` picks it up
+automatically; point at a differently named file with `--options path/to/file`:
 
 ```bash
 vasp-core-benchmarking setup                    # auto-loads ./options.txt
 vasp-core-benchmarking setup --options my.txt   # use a differently named file
-vasp-core-benchmarking setup --cores 8,16,32    # override just --cores; file supplies the rest
 ```
 
-Every `setup` option is accepted: `cores`, `jobname-prefix`, `vasp-files`,
-`include`, `mem`, `mem-per-cpu`, `time-policy`, `root`, `max-cpus-per-task` and
-`allowed-cpus-per-task`. An unknown key, a missing value or a duplicated key is
-reported with its line number, so typos are caught before any files are written.
+This writes `VASP_Benchmarking/<total>cores_<ntasks>tasks_<cpt>cpt/`, each holding
+copies of the inputs and a `submit.sl`. An unknown key, a missing value or a
+duplicated key is reported with its line number, so typos are caught before any
+files are written.
+
+##### `cores` (required)
+
+A comma-separated list of single values and inclusive `start-end` ranges. A range
+may take a `:step` stride (SLURM array increment syntax, where `:` means
+"increment by"), so `cores = 1,2,4,8,16-128:8` expands to `1, 2, 4, 8, 16, 24, 32, …, 128`.
+
+For each total core count, `setup` generates **every** `ntasks × cpus-per-task`
+factorisation — e.g. `16` → `16×1, 8×2, 4×4, 2×8, 1×16`.
+
+##### `max-cpus-per-task` / `allowed-cpus-per-task` (optional)
+
+Prune the layout grid. `max-cpus-per-task` drops any layout whose OpenMP thread
+count exceeds the given value (e.g. a socket size); `allowed-cpus-per-task`
+restricts OpenMP threads to a fixed set, e.g. `allowed-cpus-per-task = 1,2,4,8`.
+
+##### `jobname-prefix` (optional)
+
+Sets the SLURM job-name prefix (default `vasp_bench`). Each job is named
+`<prefix>_<total>cores_<ntasks>MPI_<cpt>OMP` (e.g. `vasp_bench_16cores_8MPI_2OMP`),
+so you can read the layout straight off the queue.
+
+##### `mem` / `mem-per-cpu` (optional)
+
+Make memory scale with core count instead of using a fixed value from the include:
+
+- `mem` is a flat total-memory floor (e.g. `mem = 32G`).
+- `mem-per-cpu` scales with cores (e.g. `mem-per-cpu = 2G`).
+
+With both set, each job gets whichever yields more — the floor at low core counts,
+switching to per-cpu once `total_cores × mem_per_cpu` exceeds it. Giving only one
+applies it flat to every job.
+
+##### `time-policy` (optional)
+
+Make walltime depend on core count, in the form `T1,T2,...@C1,C2,...` (N+1
+walltimes for N ascending thresholds): `total_cores ≤ C1` gets `T1`, `≤ C2` gets
+`T2`, …, anything larger gets the last. For example, `time-policy = 30:00,15:00,10:00@16,64`
+gives 30:00 up to 16 cores, 15:00 up to 64, and 10:00 beyond.
+
+##### Other options
+
+`vasp-files` (default `VASP_Files`) and `include` (default
+`vasp_core_benchmarking_submit_include.txt`) point at the inputs and the include file;
+`root` (default `VASP_Benchmarking`) sets the output directory.
+
+> When `mem`/`mem-per-cpu` or `time-policy` is set, the tool writes that directive
+> itself and **overrides** the matching memory/walltime directive in the include.
+> With a time set, `setup` also reports the total requested walltime.
 
 ### Part 2 — `submit`: send the jobs to SLURM
 
