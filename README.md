@@ -96,9 +96,8 @@ srun -K1 vasp_std
 #### `options.txt`
 
 The `options.txt` file describes the set of parallel layouts you want to benchmark.
-Write one `key = value` per line, using the option names described below. Blank
-lines and lines starting with `#` are ignored, `-` and `_` are interchangeable in
-keys, and quotes around a value are optional. A typical `options.txt` looks like:
+Write one `key = value` per line, using the option names described below. A typical 
+`options.txt` looks like:
 
 ```text
 # options.txt — VASP core-benchmarking setup
