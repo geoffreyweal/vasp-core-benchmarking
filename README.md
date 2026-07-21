@@ -125,8 +125,7 @@ e.g. `allowed-cpus-per-task = 1,2,4,8`.
 ##### `jobname-prefix` (optional)
 
 Sets the SLURM job-name prefix (default `vasp_bench`). Each job is named
-`<prefix>_<total>cores_<ntasks>MPI_<cpt>OMP` (e.g. `vasp_bench_16cores_8MPI_2OMP`),
-so you can read the layout straight off the queue.
+`<prefix>_<total>cores_<ntasks>MPI_<cpt>OMP` (e.g. `vasp_bench_16cores_8MPI_2OMP`).
 
 ##### `mem` / `mem-per-cpu` (optional)
 
@@ -145,16 +144,6 @@ Make walltime depend on core count, in the form `T1,T2,...@C1,C2,...` (N+1
 walltimes for N ascending thresholds): `total_cores ≤ C1` gets `T1`, `≤ C2` gets
 `T2`, …, anything larger gets the last. For example, `time-policy = 30:00,15:00,10:00@16,64`
 gives 30:00 up to 16 cores, 15:00 up to 64, and 10:00 beyond.
-
-##### Other options
-
-`vasp-files` (default `VASP_Files`) and `include` (default
-`vasp_core_benchmarking_submit_include.txt`) point at the inputs and the include file;
-`root` (default `VASP_Benchmarking`) sets the output directory.
-
-> When `mem`/`mem-per-cpu` or `time-policy` is set, the tool writes that directive
-> itself and **overrides** the matching memory/walltime directive in the include.
-> With a time set, `setup` also reports the total requested walltime.
 
 #### Running `vasp-core-benchmarking setup`
 
