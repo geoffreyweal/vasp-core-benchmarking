@@ -39,10 +39,11 @@ The tool runs in three parts, plus status/reset helpers and an optional cleanup 
 
 ### Part 1 — `setup`: create the benchmarking files
 
-Provide two things in the directory you run from:
+Provide three things in the directory you run from:
 
 1. A `VASP_Files/` directory of inputs (or point at it with `--vasp-files`).
 2. A `vasp_core_benchmarking_submit_include.txt` (or pass `--include`).
+3. An `options.txt` describing the layouts to benchmark (or pass `--options`).
 
 #### `VASP_Files`
 
@@ -61,8 +62,6 @@ The four required files must be present. Every file in `VASP_Files/` (the inputs
 plus any extras) is copied into each benchmark directory **unchanged** — the
 parallel layout is varied only through the generated `submit.sl`
 (`--ntasks`, `--cpus-per-task` and `OMP_NUM_THREADS`).
-
-> `POTCAR` files are distributed under the VASP licence, so provide your own.
 
 #### `vasp_core_benchmarking_submit_include.txt`
 
@@ -94,13 +93,9 @@ echo -e "\n====== Launching VASP ======\n"
 srun -K1 vasp_std
 ```
 
-#### Running `vasp-core-benchmarking setup`
+#### `options.txt`
 
-Once you have set up the `VASP_Files` folder and `vasp_core_benchmarking_submit_include.txt`
-file, describe the set of parallel layouts you want to benchmark in a plain-text
-**`options.txt`** and run `setup`
-to create your benchmarking environments.
-
+The `options.txt` file describes the set of parallel layouts you want to benchmark.
 Write one `key = value` per line, using the option names described below. Blank
 lines and lines starting with `#` are ignored, `-` and `_` are interchangeable in
 keys, and quotes around a value are optional. A typical `options.txt` looks like:
@@ -112,19 +107,6 @@ mem          = 32G
 mem-per-cpu  = 2G
 time-policy  = 30:00,15:00@32
 ```
-
-If an `options.txt` is present in the directory you run from, `setup` picks it up
-automatically; point at a differently named file with `--options path/to/file`:
-
-```bash
-vasp-core-benchmarking setup                    # auto-loads ./options.txt
-vasp-core-benchmarking setup --options my.txt   # use a differently named file
-```
-
-This writes `VASP_Benchmarking/<total>cores_<ntasks>tasks_<cpt>cpt/`, each holding
-copies of the inputs and a `submit.sl`. An unknown key, a missing value or a
-duplicated key is reported with its line number, so typos are caught before any
-files are written.
 
 ##### `cores` (required)
 
@@ -174,6 +156,23 @@ gives 30:00 up to 16 cores, 15:00 up to 64, and 10:00 beyond.
 > When `mem`/`mem-per-cpu` or `time-policy` is set, the tool writes that directive
 > itself and **overrides** the matching memory/walltime directive in the include.
 > With a time set, `setup` also reports the total requested walltime.
+
+#### Running `vasp-core-benchmarking setup`
+
+Once you have set up the `VASP_Files` folder, `vasp_core_benchmarking_submit_include.txt`
+and `options.txt`, run `setup` to create your benchmarking environments. If an
+`options.txt` is present in the directory you run from, `setup` picks it up
+automatically; point at a differently named file with `--options path/to/file`:
+
+```bash
+vasp-core-benchmarking setup                    # auto-loads ./options.txt
+vasp-core-benchmarking setup --options my.txt   # use a differently named file
+```
+
+This writes `VASP_Benchmarking/<total>cores_<ntasks>tasks_<cpt>cpt/`, each holding
+copies of the inputs and a `submit.sl`. An unknown key, a missing value or a
+duplicated key is reported with its line number, so typos are caught before any
+files are written.
 
 ### Part 2 — `submit`: send the jobs to SLURM
 
