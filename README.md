@@ -97,7 +97,8 @@ srun -K1 vasp_std
 #### Running `vasp-core-benchmarking setup`
 
 Once you have set up the `VASP_Files` folder and `vasp_core_benchmarking_submit_include.txt`
-file, describe the sweep you want in a plain-text **`options.txt`** and run `setup`
+file, describe the set of parallel layouts you want to benchmark in a plain-text
+**`options.txt`** and run `setup`
 to create your benchmarking environments.
 
 Write one `key = value` per line, using the option names described below. Blank
@@ -253,7 +254,7 @@ The HTML shows four metrics — **CPU utilisation**, **Max Memory utilisation**,
 
 By default t<sub>1</sub> is the 1 MPI × 1 OMP run inside `--root`. Use `--baseline`
 to anchor speedup elsewhere — e.g. a **non-hyperthreaded** single-core run when the
-rest of the sweep is hyperthreaded:
+rest of the benchmark runs are hyperthreaded:
 
 ```bash
 vasp-core-benchmarking report --baseline 1cores_1tasks_1cpt              # config name in --root
@@ -319,7 +320,7 @@ and re-run `setup` for any brand-new layouts), then `reset` and `submit`.
 
 ### Optional — `clean`: reclaim disk space
 
-Sweeps leave large outputs behind (WAVECAR, CHGCAR, vaspout.h5, vasprun.xml,
+Benchmark runs leave large outputs behind (WAVECAR, CHGCAR, vaspout.h5, vasprun.xml,
 ML_FF, …). After `report`, delete everything non-essential:
 
 ```bash
