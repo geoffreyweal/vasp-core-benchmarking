@@ -119,8 +119,8 @@ factorisation — e.g. `16` → `16×1, 8×2, 4×4, 2×8, 1×16`.
 ##### `max-cpus-per-task` / `allowed-cpus-per-task` (optional)
 
 `max-cpus-per-task` drops any layout whose OpenMP thread count exceeds the given 
-value (e.g. a socket size); `allowed-cpus-per-task` restricts OpenMP threads to a 
-fixed set, e.g. `allowed-cpus-per-task = 1,2,4,8`.
+value. `allowed-cpus-per-task` restricts OpenMP threads to a fixed set, 
+e.g. `allowed-cpus-per-task = 1,2,4,8`.
 
 ##### `jobname-prefix` (optional)
 
