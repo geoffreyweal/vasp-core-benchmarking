@@ -158,9 +158,10 @@ vasp-core-benchmarking setup --options my.txt   # use a differently named file
 ```
 
 This writes `VASP_Benchmarking/<total>cores_<ntasks>tasks_<cpt>cpt/`, each holding
-copies of the inputs and a `submit.sl`. An unknown key, a missing value or a
-duplicated key is reported with its line number, so typos are caught before any
-files are written.
+copies of the inputs and a `submit.sl`. 
+
+> An unknown key, a missing value or a duplicated key is reported with its line number, 
+> so typos are caught before any files are written.
 
 ### Part 2 — `submit`: send the jobs to SLURM
 
